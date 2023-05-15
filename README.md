@@ -18,7 +18,7 @@ The structure of the spatial-semantic aware (SSA) block  is shown as below
 ## Main Requirements
 * Python 3.10.0
 * Cuda 11.8+
-* Obs: This code was executed on Windows 10 
+* Obs: This code was executed only on Windows 10. Must have problems running on another OS.
 
 All requirements can be found on requirements.txt, for easy usage we have a example below to set a virtual environment and run requirements for the implementation.
 ```
