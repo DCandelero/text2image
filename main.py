@@ -85,6 +85,7 @@ def sampling(text_encoder, netG, dataloader, ixtoword, device):
     # hard debug by setting the index of trained epoch, adjust it as your need
 
     split_dir = 'valid'
+    split_mask_dir = 'valid_mask'
     #split_dir = 'test_every'
     # Build and load the generator
     netG.load_state_dict(torch.load(model_dir))
@@ -96,6 +97,8 @@ def sampling(text_encoder, netG, dataloader, ixtoword, device):
     s_tmp_dir = s_tmp
     fake_img_save_dir = '%s/%s' % (s_tmp, split_dir)
     mkdir_p(fake_img_save_dir)
+    fake_mask_save_dir = '%s/%s' % (s_tmp, split_mask_dir)
+    mkdir_p(fake_mask_save_dir)
 
     real_img_save_dir = '%s/%s' % (s_tmp, 'real')
     mkdir_p(real_img_save_dir)
@@ -150,7 +153,7 @@ def sampling(text_encoder, netG, dataloader, ixtoword, device):
                 im.save(fullpath)
 
                 # save the last fusion mask
-                s_tmp = '%s/fm' % fake_img_save_dir
+                s_tmp = '%s/fm' % fake_mask_save_dir
                 im = stage_mask[j].data.cpu().numpy()
                 # [0, 1] --> [0, 255]
                 # im = 1-im # only for better visualization
@@ -164,6 +167,101 @@ def sampling(text_encoder, netG, dataloader, ixtoword, device):
 
                 idx += 1
 
+
+def generate_images(text_encoder, netG, device, wordtoix, captions:list=[], number_of_images:int=1):
+    """
+    generate sample according to user defined captions.
+
+    caption should be in the form of a list, and each element of the list is a description of the image in form of string.
+    caption length should be no longer than 18 words.
+    example captions see below
+    """
+    if len(captions) == 0:
+        captions = ['this large bird is uniformly gray all over it also has a relatively large dark colored bill']
+
+    # caption to idx
+    # split string to word
+    for c, i in enumerate(captions):
+        captions[c] = i.split()
+
+    caps = torch.zeros((len(captions), 18), dtype=torch.int64)
+
+    for cl, line in enumerate(captions):
+        for cw, word in enumerate(line):
+            caps[cl][cw] = wordtoix[word.lower()]
+    caps = caps.to(device)
+    cap_len = []
+    for i in captions:
+        cap_len.append(len(i))
+
+    caps_lens = torch.tensor(cap_len, dtype=torch.int64).to(device)
+
+    model_dir = cfg.TRAIN.NET_G
+    split_dir = 'user_caption_generated'
+    netG.load_state_dict(torch.load(model_dir))
+    netG.eval()
+
+    batch_size = len(captions)
+    s_tmp = model_dir[:model_dir.rfind('.pth')]
+    fake_img_save_dir = '%s/%s' % (s_tmp, split_dir)
+    mkdir_p(fake_img_save_dir)
+
+    generated_images = []
+    for step in range(number_of_images):
+
+        hidden = text_encoder.init_hidden(batch_size)
+        words_embs, sent_emb = text_encoder(caps, caps_lens, hidden)
+        words_embs, sent_emb = words_embs.detach(), sent_emb.detach()
+
+        #######################################################
+        # (2) Generate fake images
+        ######################################################
+        with torch.no_grad():
+            # noise = torch.randn(1, 100) # using fixed noise
+            # noise = noise.repeat(batch_size, 1)
+            # use different noise
+            noise = []
+            for i in range(batch_size):
+                noise.append(torch.randn(1, 100))
+            noise = torch.cat(noise,0)
+            
+            noise = noise.to(device)
+            fake_imgs, stage_masks = netG(noise, sent_emb)
+            stage_mask = stage_masks[-1]
+        for j in range(batch_size):
+            # save generated image
+            s_tmp = '%s/img' % fake_img_save_dir
+            folder = s_tmp[:s_tmp.rfind('/')]
+            if not os.path.isdir(folder):
+                print('Make a new folder: ', folder)
+                mkdir_p(folder)
+            im = fake_imgs[j].data.cpu().numpy()
+            # [-1, 1] --> [0, 255]
+            im = (im + 1.0) * 127.5
+            im = im.astype(np.uint8)
+            im = np.transpose(im, (1, 2, 0))
+            im = Image.fromarray(im)
+            # fullpath = '%s_%3d.png' % (s_tmp,i)
+            fullpath = '%s_%d.png' % (s_tmp, step)
+            im.save(fullpath)
+
+            generated_images.append(im)
+
+            # save fusion mask
+            s_tmp = '%s/fm' % fake_img_save_dir
+            im = stage_mask[j].data.cpu().numpy()
+            # im = 1-im # only for better visualization
+            # [0, 1] --> [0, 255]
+            im = im * 255.0
+            im = im.astype(np.uint8)
+
+            im = np.transpose(im, (1, 2, 0))
+            im = np.squeeze(im, axis=2)
+            im = Image.fromarray(im)
+            fullpath = '%s_%d.png' % (s_tmp, step)
+            im.save(fullpath)
+
+    return generated_images
 
 def gen_sample(text_encoder, netG, device, wordtoix):
     """
@@ -359,10 +457,10 @@ def train(dataloader, ixtoword, netG, netD, text_encoder, image_encoder,
     if cfg.RESTORE:
         model_dir = cfg.TRAIN.NET_G
         netG.load_state_dict(torch.load(model_dir))
-        model_dir_D = model_dir.replace('netG', 'netD')
-        netD.load_state_dict(torch.load(model_dir_D))
+        # model_dir_D = model_dir.replace('netG', 'netD')
+        # netD.load_state_dict(torch.load(model_dir_D))
         netG.train()
-        netD.train()
+        # netD.train()
         istart = cfg.TRAIN.NET_G.rfind('_') + 1
         iend = cfg.TRAIN.NET_G.rfind('.')
         state_epoch = int(cfg.TRAIN.NET_G[istart:iend])
@@ -371,7 +469,7 @@ def train(dataloader, ixtoword, netG, netD, text_encoder, image_encoder,
         data_iter = iter(dataloader)
         # for step, data in enumerate(dataloader, 0):
         for step in tqdm(range(len(data_iter))):
-            data = data_iter.next()
+            data = next(data_iter)
 
             imags, captions, cap_lens, class_ids, keys = prepare_data(data)
             hidden = text_encoder.init_hidden(batch_size)
@@ -446,8 +544,7 @@ def train(dataloader, ixtoword, netG, netD, text_encoder, image_encoder,
         if (epoch >= cfg.TRAIN.WARMUP_EPOCHS) and (epoch % cfg.TRAIN.DSAVE_INTERVAL == 0):
             torch.save(netD.state_dict(), '%s/models/netD_%03d.pth' % (base_dir, epoch))
 
-
-if __name__ == "__main__":
+def main():
     args = parse_args()
     if args.cfg_file is not None:
         cfg_from_file(args.cfg_file)
@@ -547,8 +644,20 @@ if __name__ == "__main__":
     optimizerG = torch.optim.Adam(netG.parameters(), lr=0.0001, betas=(0.0, 0.9))
     optimizerD = torch.optim.Adam(netD.parameters(), lr=0.0004, betas=(0.0, 0.9))
 
+    # # Save wordtoix
+    # import pickle
+    # with open('wordtoix.pkl', 'wb') as fp:
+    #     pickle.dump(wordtoix, fp)
+
+    # netG.load_state_dict(torch.load(r'tmp\bird_sloss01\64\models\netG_591.pth'))
+    # print("Num of trainable params: ", len(list(netG.parameters())))
+
+
     if cfg.B_VALIDATION:
         sampling(text_encoder, netG, dataloader, ixtoword, device)  # generate images for the whole valid dataset
-        #gen_sample(text_encoder, netG, device, wordtoix) # generate images with description from user
+        # generate_images(text_encoder, netG, device, wordtoix) # generate images with description from user
     else:
         train(dataloader, ixtoword, netG, netD, text_encoder, image_encoder, optimizerG, optimizerD, state_epoch, batch_size, device)
+
+if __name__ == "__main__":
+    main()

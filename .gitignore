@@ -38,3 +38,13 @@ roi_layers.egg-info/
 *.h5
 
 slurm*.sh
+
+data/birds*
+DAMSMencoders/bird*
+
+venv/*
+
+streamlit*
+
+download_birds*
+download_encoders*
